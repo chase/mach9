@@ -374,7 +374,8 @@ fn read_field(
         | Key::ForceNx
         | Key::MetalHud
         | Key::VulkanCapture
-        | Key::MetalCapture => {}
+        | Key::MetalCapture
+        | Key::DisplayName => {}
     }
     Ok(())
 }

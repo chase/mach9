@@ -388,7 +388,8 @@ impl Rule {
             | Key::ForceNx
             | Key::MetalHud
             | Key::VulkanCapture
-            | Key::MetalCapture => {}
+            | Key::MetalCapture
+            | Key::DisplayName => {}
         }
         Ok(())
     }
@@ -470,7 +471,8 @@ impl Rule {
             | Key::ForceNx
             | Key::MetalHud
             | Key::VulkanCapture
-            | Key::MetalCapture => key
+            | Key::MetalCapture
+            | Key::DisplayName => key
                 .scalar()
                 .is_some_and(|scalar| !self.scalar(scalar).is_unset()),
         }

@@ -269,7 +269,7 @@ fn summary(rules: &LaunchRules, every: &Resolution, scalar: Scalar) -> String {
     let source = |origin: Option<&Origin>| origin.map(|origin| rules.describe(origin));
     let state = every.scalar(scalar);
     let mut summary = match (
-        state.value,
+        state.value.as_ref(),
         source(state.set_by.as_ref()),
         source(state.reset_by.as_ref()),
     ) {
@@ -288,7 +288,8 @@ fn summary(rules: &LaunchRules, every: &Resolution, scalar: Scalar) -> String {
         .zip(&rules.names)
         .filter(|(rule, _)| rule.specificity() != Specificity::Any)
         .filter_map(|(rule, name)| {
-            let value = match rule.scalar(scalar) {
+            let setting = rule.scalar(scalar);
+            let value = match &setting {
                 Setting::Set(value) => spelled(value),
                 Setting::Reset => DEFAULT_VALUE,
                 Setting::Unset => return None,
@@ -305,9 +306,9 @@ fn summary(rules: &LaunchRules, every: &Resolution, scalar: Scalar) -> String {
 
 /// A value as the log spells it: a true-or-false one as `on` or `off`, any
 /// other as the crate writes it.
-const fn spelled(value: ScalarValue) -> &'static str {
+const fn spelled(value: &ScalarValue) -> &str {
     match value {
-        ScalarValue::Bool(on) => on_off(on),
+        ScalarValue::Bool(on) => on_off(*on),
         value => value.as_str(),
     }
 }
@@ -475,7 +476,7 @@ mod tests {
         let every = Table::new().preview("", &VersionInfo::default());
         for &scalar in Scalar::ALL {
             let state = every.scalar(scalar);
-            let expected = match (state.value, &state.set_by) {
+            let expected = match (state.value.as_ref(), &state.set_by) {
                 (Some(value), Some(origin)) => format!("{} ({})", spelled(value), origin.label()),
                 _ => format!("not set (upstream: {})", scalar.upstream()),
             };
