@@ -24,7 +24,7 @@ pub struct Rule {
     pub(crate) product: Option<Fingerprint>,
     /// Substring the image's version `OriginalFilename` must contain.
     pub(crate) original_filename: Option<Fingerprint>,
-    /// See [`Rule::display_name`].
+    /// See [`Scalar::DisplayName`].
     pub(crate) display_name: Setting<String>,
     /// See [`Rule::dxgi`].
     pub(crate) dxgi: Setting<Dxgi>,
@@ -662,18 +662,6 @@ impl Rule {
             && self.arguments_override.is_none()
             && self.debug_channels.is_empty()
             && self.env.is_empty()
-    }
-
-    /// The macOS app name requested by this rule, if any. `default` restores
-    /// the normal name. Only a Wine loader that queries compatdb before exec
-    /// can act on this setting.
-    #[must_use]
-    pub const fn display_name(&self) -> Setting<&str> {
-        match &self.display_name {
-            Setting::Set(name) => Setting::Set(name.as_str()),
-            Setting::Unset => Setting::Unset,
-            Setting::Reset => Setting::Reset,
-        }
     }
 
     /// What this rule says about the scalar setting `scalar`.

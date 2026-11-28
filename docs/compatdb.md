@@ -39,7 +39,12 @@ rule in `WINE_COMPATDB_FILE` and relaunch only the game to change its name.
 
 `display_name=default` clears an earlier choice. If no name matches, or Wine
 cannot use it (for example, it contains `/` or exceeds 240 UTF-8 bytes), the
-program keeps its usual name.
+program keeps its usual name. Colons are omitted from the Dock name and
+kept in the application menu.
+
+The name is chosen before the Windows image loads. A naming rule can match
+by executable basename, Steam AppID, or `*`. Rules with `company`, `product`,
+or `original_filename` selectors are skipped for naming.
 
 ## Direct3D backends
 

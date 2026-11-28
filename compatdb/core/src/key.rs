@@ -116,7 +116,7 @@ pub enum Key {
     OriginalFilename,
     #[doc = summary!(DisplayName)]
     ///
-    /// `display_name` (see [`Rule::display_name`]).
+    /// `display_name` (see [`crate::Resolution::display_name`]).
     DisplayName,
     #[doc = summary!(Dxgi)]
     ///

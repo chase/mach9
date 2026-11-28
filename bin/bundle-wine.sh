@@ -1405,17 +1405,17 @@ smoke_test() {
     echo "  Programs for $SMOKE_PE_ARCHS run and load their Direct3D trees."
 }
 
-# check_named_loader <env-command>...: test native bundle leases, then the
-# signed loaders used in the smoke prefix by cmd.exe and a CreateProcessW child.
+# check_named_loader <env-command>...: verify loader identity on a direct
+# launch and a Windows child with its own SteamAppId.
 check_named_loader() {
-    local src="$WINE_SRC/dlls/ntdll/unix" tmp="$TMP_DIR/named-loader" log="$TMP_DIR/named-loader.log"
-    local probe="$tmp/wine.app/Contents/MacOS/wine"
+    # The upstream Wine patch branch may be built without naming support.
+    [ -f "$WINE_SRC/dlls/ntdll/unix/named_loader.h" ] || return 0
+
+    local tmp="$TMP_DIR/named-loader" log="$TMP_DIR/named-loader.log"
+    local probe="$tmp/proc-image"
     time_mark "smoke: named macOS loader"
-    mkdir -p "${probe%/*}"
-    xcrun clang -Wall -Wextra -Werror -I"$BUILD_DIR/include" -I"$src" \
-        "$REPO_DIR/smoke/named-loader.c" "$src/named_loader.c" -o "$probe"
-    run_limited 120 "$log" "$probe" "$tmp"
-    smoke_check "native named loader leases" 120 "$log"
+    mkdir -p "$tmp"
+    xcrun clang -Wall -Wextra -Werror "$REPO_DIR/smoke/named-loader.c" -o "$probe"
 
     # Colons are valid display text but a colon-only title can't name a bundle.
     run_limited 120 "$log" "$@" WINEDEBUG=warn+module WINE_COMPATDB='exe=cmd.exe;display_name=::' \
@@ -1440,7 +1440,7 @@ check_named_loader() {
 # Run in a separate shell under run_limited. On failure smoke_check stops the
 # throwaway prefix and the bundler's cleanup removes its inputs and hold file.
 check_named_loader_processes() {
-    local tmp=$1 probe=$2 wine=$3 pid created ready child_pid image
+    local tmp=$1 probe=$2 wine=$3 pid direct_pid created ready child_pid image
     cd "$tmp"
     wait_for_marker() {
         local log=$1 marker=$2 i
@@ -1455,7 +1455,7 @@ check_named_loader_processes() {
     }
     check_signed_image() {
         local image
-        image=$("$probe" --image "$1")
+        image=$("$probe" "$1")
         if [[ $image != */"$2.app/Contents/MacOS/wine" ]]; then
             echo "Expected $2.app for PID $1, got: $image" >&2
             return 1
@@ -1466,20 +1466,19 @@ check_named_loader_processes() {
     # Hold cmd.exe on stdin while checking the image at the PID we launched.
     mkfifo input
     exec 3<>input
-    WINE_COMPATDB='exe=cmd.exe;display_name=Mach9 Smoke' "$wine" 'C:\windows\system32\cmd.exe' \
+    WINE_COMPATDB='exe=cmd.exe;display_name=Mach9: Smoke' "$wine" 'C:\windows\system32\cmd.exe' \
         /d /q /c 'echo named-loader-ready&&set /p reply=' <&3 3>&- >windows.log 2>&1 &
     pid=$!
     wait_for_marker windows.log named-loader-ready
-    check_signed_image "$pid" 'Mach9 Smoke'
-    printf 'done\r\n' >&3
-    exec 3>&-
-    wait "$pid" || { cat windows.log >&2; return 1; }
+    direct_pid=$pid
 
+    # Keep the direct launch alive while the child gets its own loader. The
+    # child's clone must not reclaim the direct launch's bundle.
     # No Steam installation: only the child's explicit Windows environment
     # contains SteamAppId. Parent and child run the same PE executable.
     : >hold-child
     env -u SteamAppId WINE_COMPATDB='exe=steam:4294967294;display_name=Mach9 Steam Child' \
-        "$wine" "$PWD/named-loader-child.exe" >child.log 2>&1 &
+        "$wine" "$PWD/named-loader-child.exe" 3>&- >child.log 2>&1 &
     pid=$!
     wait_for_marker child.log 'named-loader-child-created '
     wait_for_marker child.log 'named-loader-child-ready '
@@ -1492,13 +1491,17 @@ check_named_loader_processes() {
     fi
     child_pid=${BASH_REMATCH[2]}
     check_signed_image "$child_pid" 'Mach9 Steam Child'
-    image=$("$probe" --image "$pid")
+    check_signed_image "$direct_pid" 'Mach9 Smoke'
+    image=$("$probe" "$pid")
     if [[ $image != */wine.app/Contents/MacOS/wine || ! $image -ef $wine ]]; then
         echo "Expected the packaged wine.app for parent PID $pid, got: $image" >&2
         return 1
     fi
     rm hold-child
     wait "$pid" || { cat child.log >&2; return 1; }
+    printf 'done\r\n' >&3
+    exec 3>&-
+    wait "$direct_pid" || { cat windows.log >&2; return 1; }
 }
 
 # check_rules_file <env-command>...: run cmd.exe in the booted throwaway prefix

@@ -1,18 +1,10 @@
-//! Resolve a child's app name without applying any of its runtime settings.
+//! Resolve the app name before exec without applying any runtime settings.
 
-use std::{
-    ffi::{CStr, OsStr},
-    mem::MaybeUninit,
-    os::unix::ffi::OsStrExt,
-    path::{Path, PathBuf},
-};
+use std::{ffi::CStr, mem::MaybeUninit};
 
-use compatdb_core::{
-    Table, VersionInfo,
-    runtime::{basename_of, steam_app, steam_app_id},
-};
+use compatdb_core::runtime::{basename_of, steam_app, steam_app_id};
 
-use crate::{RULE_SOURCES, load_table, ntdll::Ntdll, version};
+use crate::{RULE_SOURCES, load_table};
 
 /// Look up a name before forking a Windows child. Use the target's
 /// environment: a game launched by Steam can have a
@@ -74,166 +66,74 @@ pub unsafe extern "C" fn compatdb_resolve_display_name(
 
     // SAFETY: output region and its bound were checked above.
     let output = unsafe { std::slice::from_raw_parts_mut(out.cast(), out_size) };
-    lookup(&exe, steam_app(env), || image_version(image), output)
+    lookup(&exe, steam_app(env), output)
 }
 
-/// Look up a direct Unix launch before Wine has a PEB, a Windows environment,
-/// or a server connection. Never call ntdll path conversion from this entry point.
+/// Look up a direct launch using argv and the Unix `SteamAppId`. The prefix
+/// argument is retained for compatibility with Wine's original resolver ABI.
 ///
 /// # Safety
-/// `image` (argv[1]) and `prefix` are NUL-terminated Unix strings. `appid` is
-/// either NULL or the NUL-terminated value of `SteamAppId` from the Unix launch
-/// environment. `out` must be writable for `out_size` bytes, disjoint from the
-/// inputs. Returns UTF-8 bytes excluding NUL, or zero without writing.
+/// `image` and non-null `appid` must be NUL-terminated. `out` must be
+/// writable for `out_size` bytes and disjoint from both inputs.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn compatdb_resolve_initial_display_name(
     image: *const libc::c_char,
-    prefix: *const libc::c_char,
+    _prefix: *const libc::c_char,
     appid: *const libc::c_char,
     out: *mut libc::c_char,
     out_size: usize,
 ) -> usize {
-    if image.is_null()
-        || prefix.is_null()
-        || out.is_null()
-        || out_size == 0
-        || out_size > isize::MAX as usize
-    {
+    if image.is_null() || out.is_null() || out_size == 0 || out_size > isize::MAX as usize {
         return 0;
     }
     // SAFETY: the caller guarantees NUL termination and writable disjoint output.
-    let (image, prefix, appid, output) = unsafe {
+    let (image, appid, output) = unsafe {
         (
             CStr::from_ptr(image).to_bytes(),
-            CStr::from_ptr(prefix).to_bytes(),
             (!appid.is_null()).then(|| CStr::from_ptr(appid)),
             std::slice::from_raw_parts_mut(out.cast(), out_size),
         )
     };
-    let Some((exe, path)) = initial_image(image, prefix) else {
+    let Some(exe) = initial_basename(image) else {
         return 0;
     };
-    let appid = appid.and_then(|s| s.to_str().ok()).and_then(steam_app_id);
-    lookup(exe, appid, || version::read_file(path.as_deref()?), output)
+    lookup(
+        exe,
+        appid.and_then(|s| s.to_str().ok()).and_then(steam_app_id),
+        output,
+    )
 }
 
-const fn dos_separator(byte: u8) -> bool {
-    matches!(byte, b'/' | b'\\')
-}
-
-// Keep the name and the fingerprint path in sync. An unknown host path
-// still allows rules that don't require a fingerprint.
-fn initial_image<'a>(image: &'a [u8], prefix: &[u8]) -> Option<(&'a str, Option<PathBuf>)> {
-    if image.starts_with(b"/") {
-        // Wine tries an absolute Unix spelling first. Leave POSIX components
-        // (including backslashes, trailing dots and symlink/..) untouched.
-        let exe = std::str::from_utf8(image.rsplit(|b| *b == b'/').next()?).ok()?;
-        return (!matches!(exe, "" | "." | "..")).then(|| {
-            let path = PathBuf::from(OsStr::from_bytes(image));
-            (exe, Some(path))
-        });
-    }
-
-    let (drive, tail, known) = match image {
-        [drive, b':', sep, tail @ ..] if drive.is_ascii_alphabetic() && dos_separator(*sep) => {
-            (Some(drive.to_ascii_lowercase()), tail, true)
-        }
-        // Drive-relative, rooted without a drive, device and UNC paths.
-        [_, b':', tail @ ..] => (None, tail, false),
-        [b'\\', ..] => (None, image, false),
-        _ => (None, image, true),
+fn initial_basename(image: &[u8]) -> Option<&str> {
+    let exe = if image.starts_with(b"/") {
+        // Wine tries absolute Unix paths as written first.
+        image.rsplit(|&b| b == b'/').next()?
+    } else {
+        let path = match image {
+            [drive, b':', rest @ ..] if drive.is_ascii_alphabetic() => rest,
+            _ => image,
+        };
+        let leaf = path.rsplit(|&b| matches!(b, b'/' | b'\\')).next()?;
+        // DOS lookup strips trailing spaces and dots from the last component.
+        let end = leaf.iter().rposition(|b| !matches!(b, b' ' | b'.'))? + 1;
+        leaf.get(..end)?
     };
-    let mut parts = tail.rsplit(|&b| dos_separator(b));
-    let basename = parts.next()?;
-    // Wine removes trailing ASCII spaces and dots from the final component.
-    // An empty leaf (including final . and ..) doesn't name an executable.
-    let end = basename.iter().rposition(|b| !matches!(b, b'.' | b' '))? + 1;
-    let exe = std::str::from_utf8(basename.get(..end)?).ok()?;
-    if !known || dos_device_name(exe.as_bytes()) {
-        return Some((exe, None));
+    if matches!(exe, b"" | b"." | b"..") {
+        return None;
     }
-
-    // Match the direct loader's DOS collapse_path before joining to the host
-    // path. A drive mapping is normally a symlink: passing .. to the host
-    // would navigate the target's parents, not the Windows path's parents.
-    let mut dirs = Vec::new();
-    for part in parts.rev() {
-        match part {
-            b"" | b"." => (),
-            b".." => {
-                if dirs.pop().is_none() && drive.is_none() {
-                    // We don't know where the current DOS drive root is.
-                    return Some((exe, None));
-                }
-            }
-            // Wine removes one trailing dot from intermediate components.
-            _ => dirs.push(part.strip_suffix(b".").unwrap_or(part)),
-        }
-    }
-    if !dirs
-        .iter()
-        .copied()
-        .chain([exe.as_bytes()])
-        .all(dos_component)
-    {
-        return Some((exe, None));
-    }
-    let mut path = drive.map_or_else(PathBuf::new, |drive| {
-        Path::new(OsStr::from_bytes(prefix))
-            .join("dosdevices")
-            .join(OsStr::from_bytes(&[drive, b':']))
-    });
-    path.extend(dirs.into_iter().map(OsStr::from_bytes));
-    path.push(exe);
-    Some((exe, Some(path)))
+    std::str::from_utf8(exe).ok()
 }
 
-fn dos_component(part: &[u8]) -> bool {
-    !matches!(part, b"" | b"." | b"..")
-        && std::str::from_utf8(part).is_ok()
-        && !part
-            .iter()
-            .any(|&b| b < 32 || matches!(b, b':' | b'"' | b'<' | b'>' | b'|' | b'?' | b'*'))
-}
-
-fn dos_device_name(exe: &[u8]) -> bool {
-    let stem = exe
-        .split(|b| matches!(b, b'.' | b':'))
-        .next()
-        .unwrap_or_default();
-    let end = stem.iter().rposition(|b| *b != b' ').map_or(0, |i| i + 1);
-    let stem = stem.get(..end).unwrap_or_default();
-    [
-        b"AUX".as_slice(),
-        b"CON",
-        b"NUL",
-        b"PRN",
-        b"CONIN$",
-        b"CONOUT$",
-    ]
-    .iter()
-    .any(|name| stem.eq_ignore_ascii_case(name))
-        || matches!(stem, [prefix @ .., b'1'..=b'9']
-            if prefix.eq_ignore_ascii_case(b"COM") || prefix.eq_ignore_ascii_case(b"LPT"))
-}
-
-fn lookup(
-    exe: &str,
-    steam: Option<u32>,
-    image_version: impl FnOnce() -> Option<VersionInfo>,
-    output: &mut [MaybeUninit<u8>],
-) -> usize {
+fn lookup(exe: &str, steam: Option<u32>, output: &mut [MaybeUninit<u8>]) -> usize {
     let Some(sources) = RULE_SOURCES.get() else {
         return 0;
     };
-    let (table, _) = load_table(sources);
-    let Some(resolution) = resolve(&table, exe, steam, image_version) else {
+    if sources.inline.is_none() && sources.file.is_none() {
         return 0;
-    };
-    let Some(name) = resolution
-        .display_name()
-        .filter(|name| name.len() < output.len())
-    else {
+    }
+    let (table, _) = load_table(sources);
+    let resolution = table.resolve_with_optional_version(exe, None, steam);
+    let Some(name) = resolution.display_name() else {
         return 0;
     };
     let Some((bytes, tail)) = output.split_at_mut_checked(name.len()) else {
@@ -257,31 +157,6 @@ fn valid_env(env: &[u16]) -> bool {
         }
         _ => false,
     }
-}
-
-fn resolve(
-    table: &Table,
-    exe: &str,
-    steam: Option<u32>,
-    image_version: impl FnOnce() -> Option<VersionInfo>,
-) -> Option<compatdb_core::Resolution> {
-    let mut naming_rules = table
-        .rules()
-        .iter()
-        .filter(|rule| !rule.display_name().is_unset() && rule.exe().matches(exe, steam));
-    let first = naming_rules.next()?;
-    let version =
-        if first.has_fingerprint() || naming_rules.any(compatdb_core::Rule::has_fingerprint) {
-            image_version()
-        } else {
-            None
-        };
-    Some(table.resolve_with_optional_version(exe, version.as_ref(), steam))
-}
-
-fn image_version(image: &[u16]) -> Option<VersionInfo> {
-    let path = Ntdll::resolve()?.unix_file_name(image).ok()?;
-    version::read_file(Path::new(OsStr::from_bytes(&path)))
 }
 
 #[cfg(test)]
