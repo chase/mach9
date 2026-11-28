@@ -212,6 +212,7 @@ fn set_registry_value(wine: &Path, game_dir: &Path, setting: &Setting) {
         setting.name, setting.value
     );
     let result = Command::new(wine)
+        .env_remove("WINE_MACOS_APP_NAME")
         .args([
             "reg",
             "add",

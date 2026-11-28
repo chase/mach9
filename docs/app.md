@@ -55,6 +55,33 @@ Steam works the same way:
 
 Steam's library then also lives outside the prefix.
 
+### Names in the Dock and Cmd+Tab
+
+Games started from Steam show the name Steam recorded when it installed
+them. You can install a game and start it under that name without
+restarting Steam.
+
+For a game you start directly, put the name in its Environment field,
+for example `WINE_MACOS_APP_NAME=Hades`. To name Steam itself, put
+`WINE_MACOS_APP_NAME=Steam` in the Environment field for `steam.exe`.
+
+To change a Steam game's name, use its Steam AppID. For a program Steam
+starts that has no name for its AppID, or no AppID at all, use its
+executable name. These commands name Braid (AppID 26800) and Steam's web
+helper in the Mach9 prefix:
+
+```sh
+export WINEPREFIX="$HOME/Library/Application Support/app.mach9/prefix"
+wine=/Applications/Mach9.app/Contents/Resources/wine/bin/wine
+key='HKCU\Software\Wine\Mac App Names'
+"$wine" reg add "$key" /v 26800 /t REG_SZ /d 'My Braid' /f
+"$wine" reg add "$key" /v steamwebhelper.exe /t REG_SZ /d Steam /f
+```
+
+The new name appears the next time the program starts. Delete the value
+to restore the usual name. The Dock drops colons from names. The
+application menu keeps them.
+
 ## Play
 
 The checked game in the Dock menu is the selected one. Clicking the Dock
