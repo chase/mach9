@@ -1229,7 +1229,7 @@ check_default_trees() {
 smoke_test() {
     local version log arch cc exe marker markers var dlls
     local wine_env=(env -u WINE_COMPATDB -u WINE_COMPATDB_FILE -u WINE_COMPATDB_APP_PID
-                    -u WINE_D3D_CONFIG -u WINEDLLOVERRIDES)
+                    -u WINE_D3D_CONFIG -u WINEDLLOVERRIDES -u WINE_MACOS_APP_NAME -u SteamAppId)
     for var in $(compgen -e | grep -E '^(WINEMSYNC|FEX_|VK_|VKD3D_|DXMT_|MESA_|MTL_|METAL_|GST_)'); do
         wine_env+=(-u "$var")
     done
@@ -1383,6 +1383,7 @@ smoke_test() {
     check_tree_loads i686 "${wine_env[@]}"
     check_tree_loads aarch64 "${wine_env[@]}"
     check_rules_file "${wine_env[@]}"
+    check_app_names "${wine_env[@]}"
     check_child_env_runs "${wine_env[@]}"
     check_wgl_runs "${wine_env[@]}"
     check_vulkan_runs "${wine_env[@]}"
@@ -1399,6 +1400,80 @@ smoke_test() {
     check_linger_runs "${wine_env[@]}"
     smoke_stop
     echo "  Programs for $SMOKE_PE_ARCHS run and load their Direct3D trees."
+}
+
+# check_app_names <env-command>...: check the signed loader at the direct
+# launch PID and at the PIDs of Windows children in the same prefix.
+check_app_names() {
+    local dir="$TMP_DIR/app-names" log="$TMP_DIR/app-names.log"
+    local names='HKCU\Software\Wine\Mac App Names'
+    local game='HKLM\Software\Microsoft\Windows\CurrentVersion\Uninstall\Steam App 26800'
+    local launch=(/bin/bash -ec 'run_app_name_launch "$@"' _ "$dir" "$WINE_DIR/bin/wine")
+    time_mark "smoke: macOS app names"
+    mkdir -p "$dir"
+    xcrun clang -O2 -Wall -Wextra -Werror -o "$dir/app-image" "$REPO_DIR/smoke/app-image.c"
+    "$MINGW_DIR/bin/x86_64-w64-mingw32-clang" -O2 -Wall -Wextra -Werror -D__WINESRC__ \
+        -I"$WINE_SRC/include" -o "$dir/steamwebhelper.exe" "$REPO_DIR/smoke/app-pid.c"
+    mkfifo "$dir/input" "$dir/output"
+    export -f run_app_name_launch
+    run_limited 120 "$log" "$@" WINE_MACOS_APP_NAME=:: "${launch[@]}" wine '' wine
+    smoke_check "a direct launch with an unusable app name" 120 "$log"
+
+    # cmd.exe stays running while the registry changes. Only its Windows
+    # environment supplies the AppID to the next child.
+    run_limited 120 "$log" "$@" 'WINE_MACOS_APP_NAME=Mach9: Steam' "${launch[@]}" 'Mach9 Steam' \
+        '' wine \
+        "reg add \"$names\" /v steamwebhelper.exe /t REG_SZ /d \"Smoke Helper\" /f" 'Smoke Helper' \
+        'set "SteamAppId=26800"' 'Smoke Helper' \
+        "reg add \"$game\" /v DisplayName /t REG_SZ /d Braid /reg:32 /f" Braid \
+        "reg add \"$names\" /v 26800 /t REG_SZ /d \"My Braid\" /f" 'My Braid' \
+        "reg delete \"$names\" /v 26800 /f" Braid
+    smoke_check "the signed macOS app names" 120 "$log"
+}
+
+# run_app_name_launch <dir> <wine> <parent app> [<setup command> <child app>]...
+# Each child reports its native PID and waits for '+' while we inspect both
+# images. Run in a shell under run_limited so the whole batch has a deadline.
+run_app_name_launch() {
+    local dir=$1 wine=$2 parent_app=$3 parent child line i=0
+    local marker='^wine-build smoke test: child pid ([1-9][0-9]*)$'
+    local expected=()
+    shift 3
+    cd "$dir"
+    {
+        printf '%s\r\n' '@echo off' 'set "SteamAppId="'
+        while [ "$#" -gt 0 ]; do
+            if [ -n "$1" ]; then printf '%s || exit /b 1\r\n' "$1"; fi
+            printf '%s\r\n' 'steamwebhelper.exe || exit /b 1'
+            expected+=("$2")
+            shift 2
+        done
+        printf '%s\r\n' 'exit /b 0'
+    } >app-names.cmd
+
+    "$wine" 'C:\windows\system32\cmd.exe' /d /q /c app-names.cmd <input >output &
+    parent=$!
+    exec 3>input
+    while IFS= read -r line; do
+        line=${line%$'\r'}
+        printf '%s\n' "$line"
+        [[ $line =~ $marker ]] || continue
+        child=${BASH_REMATCH[1]}
+        if [[ $child == "$parent" || $i -ge ${#expected[@]} ]]; then
+            echo "Unexpected child PID $child for parent $parent" >&2
+            return 1
+        fi
+        ./app-image "$child" "${expected[i]}.app"
+        ./app-image "$parent" "$parent_app.app"
+        printf '+' >&3
+        i=$((i + 1))
+    done <output
+    exec 3>&-
+    wait "$parent"
+    if [ "$i" -lt "${#expected[@]}" ]; then
+        echo "Missing child for ${expected[i]}" >&2
+        return 1
+    fi
 }
 
 # check_rules_file <env-command>...: run cmd.exe in the booted throwaway prefix
