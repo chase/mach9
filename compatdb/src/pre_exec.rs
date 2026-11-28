@@ -69,16 +69,14 @@ pub unsafe extern "C" fn compatdb_resolve_display_name(
     lookup(&exe, steam_app(env), output)
 }
 
-/// Look up a direct launch using argv and the Unix `SteamAppId`. The prefix
-/// argument is retained for compatibility with Wine's original resolver ABI.
+/// Look up a direct launch using argv and the Unix `SteamAppId`.
 ///
 /// # Safety
 /// `image` and non-null `appid` must be NUL-terminated. `out` must be
 /// writable for `out_size` bytes and disjoint from both inputs.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn compatdb_resolve_initial_display_name(
+pub unsafe extern "C" fn compatdb_resolve_unix_display_name(
     image: *const libc::c_char,
-    _prefix: *const libc::c_char,
     appid: *const libc::c_char,
     out: *mut libc::c_char,
     out_size: usize,

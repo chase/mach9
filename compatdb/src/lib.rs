@@ -1,9 +1,9 @@
 //! `compatdb.so`: the per-process settings library wine's ntdll dlopens from
 //! `<ntdll_dir>/compatdb.so` in every process (the slot `CrossOver` hack 24067
-//! provides). Its Mach-O initializer snapshots rule sources. Older Wine
-//! also applies the current process's rules there; Wine that loads the
-//! resolver early calls `compatdb_apply_current_process` once the image and
-//! process parameters are ready, before any PE code runs.
+//! provides). Its Mach-O initializer snapshots rule sources and normally
+//! applies the current process's rules. Wine can also load the same library
+//! before selecting a named loader, then call `compatdb_apply_current_process`
+//! once the image and process parameters are ready, before any PE code runs.
 //!
 //! It is built for a native arm64 Wine, which runs x86 programs under
 //! emulation and native ARM64 ones.

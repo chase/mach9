@@ -33,9 +33,8 @@ fn ffi_reads_the_current_file_and_uses_counted_utf8_output() -> TestResult {
         for image in [c"C:\\Games\\Game.exe", c"/games/Game.exe", c"Game.exe"] {
             // SAFETY: static C strings and a disjoint output buffer of the specified size.
             let len = unsafe {
-                compatdb_resolve_initial_display_name(
+                compatdb_resolve_unix_display_name(
                     image.as_ptr(),
-                    c"/prefix".as_ptr(),
                     c"440".as_ptr(),
                     buf.as_mut_ptr().cast(),
                     buf.len(),
@@ -59,9 +58,8 @@ fn ffi_reads_the_current_file_and_uses_counted_utf8_output() -> TestResult {
         ] {
             // SAFETY: static input strings, null optional AppID, valid output buffer.
             let len = unsafe {
-                compatdb_resolve_initial_display_name(
+                compatdb_resolve_unix_display_name(
                     image.as_ptr(),
-                    c"/missing-prefix".as_ptr(),
                     std::ptr::null(),
                     buf.as_mut_ptr().cast(),
                     buf.len(),
